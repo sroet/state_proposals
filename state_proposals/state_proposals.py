@@ -2,11 +2,14 @@ import numpy as np
 import itertools as itt
 
 
-class StateProposal(object):
+class StateProposals(object):
     def __init__(self, cvs, positive_trajs, negative_trajs,
                  max_combinations=None, cutoff=0.35, cutoff_step=0.05,
                  cutoff_max=0.45):
         self.cvs = cvs
+        self.name_to_cv = {}
+        for cv in cvs:
+            self.name_to_cv[cv.name] = cv
         self.positive_trajs = positive_trajs
         self.negative_trajs = negative_trajs
         self.cutoff = cutoff
@@ -24,17 +27,32 @@ class StateProposal(object):
                                                               max_combinations)
         self.pos_result_dict = self.make_result_dict(self.cv_combinations_dict,
                                                      self.pos_cv_results,
-                                                     self.cutoff_list)
+                                                     self.cutoff_list,
+                                                     cvs)
 
         self.neg_result_dict = self.make_result_dict(self.cv_combinations_dict,
                                                      self.neg_cv_results,
-                                                     self.cutoff_list)
+                                                     self.cutoff_list,
+                                                     cvs)
         self.total_result_dict = self.make_total_result_dict(
                                                 self.pos_result_dict,
                                                 self.neg_result_dict,
                                                 len(positive_trajs),
                                                 len(negative_trajs))
-        self.make_output(self.total_result_dict)
+        self.output_dict = self.make_output_dict(self.total_result_dict)
+
+    def make_cv_combination_key(self, cv_combination):
+        key = ""
+        if type(cv_combination) != list:
+            cv_combination = [cv_combination]
+        for comb in cv_combination:
+            if type(comb) == list:
+                key += self.make_cv_combination_key(comb)
+            elif type(comb) == str:
+                key += " " + comb + " "
+            else:
+                key += comb.name
+        return key
 
     def make_cutoff_list(self, cvs, cutoff, cutoff_step, cutoff_max):
         max_decimal = max([len(str(i).split('.', 1)[1])
@@ -49,10 +67,13 @@ class StateProposal(object):
 
     def total_length(self, n_list):
         try:
-            return sum([self.total_length(i) for i in n_list])
+            n_list = n_list[0]
+        except (IndexError, TypeError):
+            return 0
+        try:
+            return sum([self.total_length([i]) for i in n_list])
         except TypeError:
             return 1
-
     def make_cutoff_dict(self, cv_list, cutoff_list):
         return_dict = {}
         for i, cv in enumerate(cv_list):
@@ -65,7 +86,10 @@ class StateProposal(object):
         for cv in cv_list:
             result_array = np.zeros(shape=(len(trajs), max_traj))
             for i_traj, traj in enumerate(trajs):
-                result_cv = np.array([i[0] for i in cv(traj)])
+                try:
+                    result_cv = np.array([i[0] for i in cv(traj)])
+                except (TypeError, IndexError):  # either scalar, float or int
+                    result_cv = np.array([i for i in cv(traj)])
                 for i_array in range(max_traj):
                     try:
                         result_array[i_traj][i_array] = result_cv[i_array]
@@ -74,12 +98,43 @@ class StateProposal(object):
             result_dict[cv] = result_array
         return result_dict
 
+    def combine_cv_and_or(self, cv_list, and_or_list, and_or_index=0):
+        result = []
+        if len(cv_list) == 1:
+            result.append(cv_list)
+            result.append(0)
+            return result
+
+        for cv_index, cv in enumerate(cv_list):
+            try:
+                cv[0]
+            except TypeError:
+                result.append(cv)
+                if cv_index != len(cv_list)-1:
+                    result.append(and_or_list[and_or_index])
+                    and_or_index += 1
+            else:
+                temp = []
+                for i in self.combine_cv_and_or(cv, and_or_list, and_or_index):
+                    temp.append(i)
+                    and_or_index = temp[-1]
+
+                result.append(temp[:-1])
+
+            if and_or_index != len(and_or_list):
+                result.append(and_or_index)
+
+        return result
+
     def add_combination(self, result_dict,
                         current_combination,
                         possible_length):
         combination_list = []
         for j in range(1, possible_length + 1):
+            print possible_length
+
             added_combination = result_dict[j]['cv_combinations']
+            print added_combination
             itt_product = itt.product(current_combination,
                                       added_combination)
             combination_list.append([i for i in itt_product
@@ -105,12 +160,10 @@ class StateProposal(object):
         return unique_list
 
     def next_combination(self, result_dict, current_combination, max_length):
-        try:
-            current_length = self.total_lenght(current_combination[0])
-        except IndexError:
-            current_combination = result_dict[1]['cv_combinations']
-            current_length = self.total_length(current_combination[0])
-
+        current_length = self.total_length(current_combination)
+        if current_length == 0:
+            current_combination =[i for i in result_dict[1]['cv_combinations']]
+            current_length = self.total_length(current_combination)
         possible_length = max_length - current_length
         if possible_length == 0:
             return current_combination
@@ -139,7 +192,12 @@ class StateProposal(object):
                            'cv_and_or_combinations': cv_list,
                            'total_list': cv_list}}
         for j in range(2, max_combinations + 1):
-            cv_combinations = self.next_combinations(result_dict, [], j)
+            cv_combinations = self.next_combination(result_dict, [], j)
+            try:
+                cv_combinations[0]
+            except TypeError:
+                cv_combinations = [cv_combinations]
+                cv_combinations = [cv_combinations]
             and_or_combinations = [i for i in itt.product(and_or_list,
                                                           repeat=j-1)]
             cv_and_or_combinations = [i for i in itt.product(cv_combinations,
@@ -147,7 +205,6 @@ class StateProposal(object):
                                                              )]
             total_list = [self.combine_cv_and_or(i[0], i[1])
                           for i in cv_and_or_combinations]
-
             result_dict[j] = {'cv_combinations': cv_combinations,
                               'and_or_combinations': and_or_combinations,
                               'cv_and_or_combinations': cv_and_or_combinations,
@@ -193,33 +250,36 @@ class StateProposal(object):
                          cutoff_list, cv_list):
         result_dict = {}
         for combination_type in cv_combination_dict.keys():
+            c_type_dict = {}
             total_list = cv_combination_dict[combination_type]['total_list']
             for cv_combination in total_list:
+                internal_cv_combination_dict = {}
+                cv_key = self.make_cv_combination_key(cv_combination)
                 for cutoff_dict in cutoff_list:
+                    try:
+                        cutoff_key = str([cutoff_dict[cv] for cv in cv_list
+                                          if cv in cv_combination])
+                    except TypeError:
+                        cutoff_key = str([cutoff_dict[cv_combination]])
                     result_mask = self.combination_to_mask(cv_combination,
                                                            cv_result_dict,
                                                            cutoff_dict)
                     result = []
                     for i in range(result_mask.shape[0]):
                         if sum(result_mask[i]) > 0:
-                            result.append[i]
-                    cv_key = str(cv_combination)
-                    cutoff_key = str([cutoff_dict[cv] for cv in cv_list])
-                    try:
-                        c_type_dict = result_dict[combination_type]
-                        c_type_dict[cv_key][cutoff_key] = result
-                    except KeyError:
-                        cv_dict = {cv_key: {cutoff_key: result}}
-                        result_dict[combination_type] = cv_dict
+                            result.append(i)
+                    internal_cv_combination_dict[cutoff_key] = result
+                c_type_dict[cv_key] = internal_cv_combination_dict
+            result_dict[combination_type] = c_type_dict
         return result_dict
 
     def make_total_result_dict(self, pos_dict, neg_dict, pos_max, neg_max):
         result_dict = {}
         for c_type in pos_dict.keys():
             c_type_dict = {}
-            for cv_comb in c_type.keys():
+            for cv_comb in pos_dict[c_type].keys():
                 cv_comb_dict = {}
-                for cutoff_comb in cv_comb.keys():
+                for cutoff_comb in pos_dict[c_type][cv_comb].keys():
                     n_pos = len(pos_dict[c_type][cv_comb][cutoff_comb])
                     n_neg = len(neg_dict[c_type][cv_comb][cutoff_comb])
                     procent_pos = float(n_pos)/pos_max
@@ -227,11 +287,17 @@ class StateProposal(object):
                     try:
                         absolute_fraction = float(n_pos)/n_neg
                     except ZeroDivisionError:
-                        absolute_fraction = np.inf
+                        if n_pos > 0:
+                            absolute_fraction = np.inf
+                        else:
+                            absolute_fraction = 0.0
                     try:
                         relative_fraction = procent_pos/procent_neg
                     except ZeroDivisionError:
-                        relative_fraction = np.inf
+                        if procent_pos > 0:
+                            relative_fraction = np.inf
+                        else:
+                            relative_fraction = 0.0
                     cutoff_comb_dict = {'n_pos': n_pos,
                                         'n_neg': n_neg,
                                         'absolute_fraction': absolute_fraction,
@@ -250,8 +316,8 @@ class StateProposal(object):
         ctype_abs_fraction_list = []
         ctype_rel_fraction = 0
         ctype_rel_fraction_list = []
-        for cv_comb in c_type.keys():
-            for cutoff_comb in cv_comb.keys():
+        for cv_comb in total_result_dict[c_type].keys():
+            for cutoff_comb in total_result_dict[c_type][cv_comb].keys():
                 result = total_result_dict[c_type][cv_comb][cutoff_comb]
                 if result['n_pos'] > ctype_max_n_pos:
                     ctype_max_n_pos_list = [cv_comb+cutoff_comb]
@@ -303,26 +369,28 @@ class StateProposal(object):
             ctype_dict = output_dict[ctype]
             if ctype_dict['max_n_pos'] > total_max_n_pos:
                 total_max_n_pos = ctype_dict['max_n_pos']
-                total_max_n_pos_list = ctype_dict['max_n_pos_list']
-            elif output_dict[ctype]['max_n_pos'] == total_max_n_pos:
+                total_max_n_pos_list = [i for i in ctype_dict['max_n_pos_list']]
+            elif ctype_dict['max_n_pos'] == total_max_n_pos:
                 total_max_n_pos_list.extend(ctype_dict['max_n_pos_list'])
 
             if ctype_dict['min_n_neg'] < total_min_n_neg:
                 total_min_n_neg = ctype_dict['min_n_neg']
-                total_min_n_neg_list = ctype_dict['min_n_neg_list']
+                total_min_n_neg_list = [i for i in ctype_dict['min_n_neg_list']]
             elif ctype_dict['min_n_neg'] == total_min_n_neg:
                 total_min_n_neg_list.extend(ctype_dict['min_n_neg_list'])
 
             if ctype_dict['abs_fraction'] > total_abs_fraction:
                 total_abs_fraction = ctype_dict['abs_fraction']
-                total_abs_fraction_list = ctype_dict['abs_fraction_list']
-            elif output_dict[ctype]['abs_fraction'] == total_abs_fraction:
+                total_abs_fraction_list = [i for i in
+                                           ctype_dict['abs_fraction_list']]
+            elif ctype_dict['abs_fraction'] == total_abs_fraction:
                 total_abs_fraction_list.extend(ctype_dict['abs_fraction_list'])
 
             if ctype_dict['rel_fraction'] > total_rel_fraction:
                 total_rel_fraction = ctype_dict['rel_fraction']
-                total_rel_fraction_list = ctype_dict['rel_fraction_list']
-            elif output_dict[ctype]['rel_fraction'] == total_rel_fraction:
+                total_rel_fraction_list = [i for i in
+                                           ctype_dict['rel_fraction_list']]
+            elif ctype_dict['rel_fraction'] == total_rel_fraction:
                 total_rel_fraction_list.extend(ctype_dict['rel_fraction_list'])
 
         output_dict['total'] = {'max_n_pos': total_max_n_pos,
@@ -331,6 +399,7 @@ class StateProposal(object):
                                 'min_n_neg_list': total_min_n_neg_list,
                                 'abs_fraction': total_abs_fraction,
                                 'abs_fraction_list': total_abs_fraction_list,
-                                'rel_fraction': total_rel_fraction_list,
+                                'rel_fraction': total_rel_fraction,
                                 'rel_fraction_list': total_rel_fraction_list}
+        print output_dict[1]
         return output_dict
